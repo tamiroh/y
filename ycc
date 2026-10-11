@@ -1,6 +1,17 @@
 #!/usr/bin/env php
 <?php
-// ycc - build y.S with the buffer size that benchmarks fastest on this machine.
+
+/**
+ * Build y.S with the buffer size that benchmarks fastest on this machine.
+ *
+ * Usage: ycc [-o out] file.S
+ *
+ * Environment:
+ *   YCC_SIZES  buffer sizes to try, multiples of 4096
+ *   YCC_BYTES  bytes piped per run
+ *   YCC_RUNS   runs per size
+ *   CC         compiler driver
+ */
 
 function usage(): never
 {
@@ -76,12 +87,7 @@ function measure(string $bin, int $bytes): float
     return (hrtime(true) - $start) / 1e9;
 }
 
-/**
- * Interleave the candidates so drift in machine load hits them equally,
- * and keep each one's fastest run.
- *
- * @return array<int, float> seconds by buffer size
- */
+/** @return array<int, float> seconds by buffer size */
 function benchmark(array $bins, int $bytes, int $runs): array
 {
     $times = array_map(fn() => INF, $bins);
