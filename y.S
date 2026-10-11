@@ -1,9 +1,7 @@
 // yes(1) for macOS on Apple Silicon (arm64).
-//
-// Fills a buffer with "y\n" once, then loops on write(2) with no libc calls.
 
 #ifndef BUFSZ
-#define BUFSZ 32768             // fastest measured on an M4 across readers
+#define BUFSZ 32768
 #endif
 
 #define SYS_exit  1
