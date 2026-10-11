@@ -19,6 +19,16 @@ function usage(): never
     exit(2);
 }
 
+function requireTarget(): void
+{
+    $os = PHP_OS_FAMILY;
+    $arch = php_uname('m');
+    if ($os !== 'Darwin' || $arch !== 'arm64') {
+        fwrite(STDERR, "ycc: unsupported target $os/$arch (need Darwin/arm64)\n");
+        exit(1);
+    }
+}
+
 function env(string $name, string $default): string
 {
     return getenv($name) ?: $default;
@@ -117,6 +127,7 @@ function fastest(array $times): int
 function main(array $argv): void
 {
     [$out, $src] = parseArgs($argv);
+    requireTarget();
     $bytes = (int) env('YCC_BYTES', '4000000000');
     $runs = (int) env('YCC_RUNS', '5');
     $tmp = tempDir();
