@@ -14,8 +14,8 @@ _main:
         adrp    x19, _buf@PAGE
         add     x19, x19, _buf@PAGEOFF
 
-        // Fill the buffer (BUFSZ plus 16 bytes of slack) 16 bytes at a time.
-        mov     x9, #0x0a79             // "y\n"
+        // Fill the buffer with "y\n".
+        mov     x9, #0x0a79
         orr     x9, x9, x9, lsl #16
         orr     x9, x9, x9, lsl #32
         mov     x10, x19
@@ -32,8 +32,7 @@ _main:
         mov     x2, x20
         svc     #0x80
         b.cs    3f
-        // A short write of odd length leaves us mid-pair; restart from the
-        // matching byte so the stream stays "y\ny\n...".
+        // Keep "y\n" aligned after an odd-length short write.
         and     x0, x0, #1
         eor     x19, x19, x0
         b       2b
