@@ -1,7 +1,18 @@
-YES ?= yes
+YES ?= yes ./y
 BENCH_BYTES ?= 10000000000
+BUFSZ ?= 32768
+
+y: y.S
+	$(CC) -DBUFSZ=$(BUFSZ) -o $@ $<
 
 .PHONY: bench
-bench:
-	@echo "$(YES): $(BENCH_BYTES) bytes"
-	@time $(YES) | head -c $(BENCH_BYTES) > /dev/null
+bench: y
+	@for yes in $(YES); do \
+		echo "$$yes: $(BENCH_BYTES) bytes"; \
+		time $$yes | head -c $(BENCH_BYTES) > /dev/null; \
+		echo; \
+	done
+
+.PHONY: clean
+clean:
+	rm -f y
