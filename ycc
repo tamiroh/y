@@ -1,56 +1,65 @@
-#!/bin/bash
-# ycc - build y.S with the buffer size that benchmarks fastest on this machine.
-set -eu
+#!/usr/bin/env php
+<?php
+// ycc - build y.S with the buffer size that benchmarks fastest on this machine.
 
-sizes=${YCC_SIZES:-"8192 16384 32768 65536 131072 262144 1048576"}
-bytes=${YCC_BYTES:-4000000000}
-runs=${YCC_RUNS:-5}
-out=a.out
-
-usage() {
-	echo "usage: ycc [-o out] file.S" >&2
-	exit 2
+function usage(): never
+{
+    fwrite(STDERR, "usage: ycc [-o out] file.S\n");
+    exit(2);
 }
 
-while getopts o: opt; do
-	case $opt in
-	o) out=$OPTARG ;;
-	*) usage ;;
-	esac
-done
-shift $((OPTIND - 1))
-[ $# -eq 1 ] || usage
-src=$1
+function run(string $command): void
+{
+    passthru($command, $status);
+    if ($status !== 0) {
+        exit($status);
+    }
+}
 
-tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+function build(int $size, string $out, string $src): void
+{
+    $cc = getenv('CC') ?: 'cc';
+    run(sprintf('%s -DBUFSZ=%d -o %s %s', $cc, $size, escapeshellarg($out), escapeshellarg($src)));
+}
 
-for n in $sizes; do
-	${CC:-cc} -DBUFSZ="$n" -o "$tmp/$n" "$src"
-	echo 999 > "$tmp/$n.best"
-done
+$sizes = array_map('intval', preg_split('/\s+/', trim(getenv('YCC_SIZES') ?: '8192 16384 32768 65536 131072 262144 1048576')));
+$bytes = (int) (getenv('YCC_BYTES') ?: 4000000000);
+$runs = (int) (getenv('YCC_RUNS') ?: 5);
 
-# Interleave the candidates so drift in machine load hits them equally,
-# and keep each one's fastest run.
-TIMEFORMAT=%R
-for ((i = 0; i < runs; i++)); do
-	for n in $sizes; do
-		t=$({ time "$tmp/$n" | head -c "$bytes" > /dev/null; } 2>&1)
-		if awk -v a="$t" -v b="$(cat "$tmp/$n.best")" 'BEGIN { exit !(a < b) }'; then
-			echo "$t" > "$tmp/$n.best"
-		fi
-	done
-done
+$opts = getopt('o:', [], $rest);
+$args = array_slice($argv, $rest);
+if ($opts === false || count($args) !== 1) {
+    usage();
+}
+$out = $opts['o'] ?? 'a.out';
+$src = $args[0];
 
-best=
-for n in $sizes; do
-	t=$(cat "$tmp/$n.best")
-	awk -v n="$n" -v t="$t" -v b="$bytes" \
-		'BEGIN { printf "ycc: BUFSZ=%-8d %.3fs  %.2f GB/s\n", n, t, b / t / 1e9 }' >&2
-	if [ -z "$best" ] || awk -v a="$t" -v b="$(cat "$tmp/$best.best")" 'BEGIN { exit !(a < b) }'; then
-		best=$n
-	fi
-done
+$tmp = sys_get_temp_dir() . '/ycc.' . getmypid();
+mkdir($tmp);
+register_shutdown_function(function () use ($tmp) {
+    array_map('unlink', glob("$tmp/*"));
+    rmdir($tmp);
+});
 
-echo "ycc: selected BUFSZ=$best" >&2
-${CC:-cc} -DBUFSZ="$best" -o "$out" "$src"
+foreach ($sizes as $n) {
+    build($n, "$tmp/$n", $src);
+}
+
+// Interleave the candidates so drift in machine load hits them equally,
+// and keep each one's fastest run.
+$best = array_fill_keys($sizes, INF);
+for ($i = 0; $i < $runs; $i++) {
+    foreach ($sizes as $n) {
+        $start = hrtime(true);
+        run(sprintf('%s | head -c %d > /dev/null', escapeshellarg("$tmp/$n"), $bytes));
+        $best[$n] = min($best[$n], (hrtime(true) - $start) / 1e9);
+    }
+}
+
+foreach ($best as $n => $t) {
+    fprintf(STDERR, "ycc: BUFSZ=%-8d %.3fs  %.2f GB/s\n", $n, $t, $bytes / $t / 1e9);
+}
+
+$selected = array_search(min($best), $best);
+fwrite(STDERR, "ycc: selected BUFSZ=$selected\n");
+build($selected, $out, $src);
