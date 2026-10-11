@@ -8,6 +8,44 @@ function usage(): never
     exit(2);
 }
 
+function env(string $name, string $default): string
+{
+    return getenv($name) ?: $default;
+}
+
+/** @return array{string, string} output path and source path */
+function parseArgs(array $argv): array
+{
+    $opts = getopt('o:', [], $rest);
+    $args = array_slice($argv, $rest);
+    if ($opts === false || count($args) !== 1) {
+        usage();
+    }
+
+    return [$opts['o'] ?? 'a.out', $args[0]];
+}
+
+/** @return int[] buffer sizes to try */
+function candidates(): array
+{
+    return env('YCC_SIZES', '8192 16384 32768 65536 131072 262144 1048576')
+        |> trim(...)
+        |> (fn($sizes) => preg_split('/\s+/', $sizes))
+        |> (fn($sizes) => array_map(intval(...), $sizes));
+}
+
+function tempDir(): string
+{
+    $dir = sys_get_temp_dir() . '/ycc.' . getmypid();
+    mkdir($dir);
+    register_shutdown_function(function () use ($dir) {
+        array_map(unlink(...), glob("$dir/*"));
+        rmdir($dir);
+    });
+
+    return $dir;
+}
+
 function run(string $command): void
 {
     passthru($command, $status);
@@ -16,50 +54,75 @@ function run(string $command): void
     }
 }
 
-function build(int $size, string $out, string $src): void
+function build(int $size, string $out, string $src): string
 {
-    $cc = getenv('CC') ?: 'cc';
-    run(sprintf('%s -DBUFSZ=%d -o %s %s', $cc, $size, escapeshellarg($out), escapeshellarg($src)));
+    run(sprintf('%s -DBUFSZ=%d -o %s %s', env('CC', 'cc'), $size, escapeshellarg($out), escapeshellarg($src)));
+
+    return $out;
 }
 
-$sizes = array_map('intval', preg_split('/\s+/', trim(getenv('YCC_SIZES') ?: '8192 16384 32768 65536 131072 262144 1048576')));
-$bytes = (int) (getenv('YCC_BYTES') ?: 4000000000);
-$runs = (int) (getenv('YCC_RUNS') ?: 5);
-
-$opts = getopt('o:', [], $rest);
-$args = array_slice($argv, $rest);
-if ($opts === false || count($args) !== 1) {
-    usage();
-}
-$out = $opts['o'] ?? 'a.out';
-$src = $args[0];
-
-$tmp = sys_get_temp_dir() . '/ycc.' . getmypid();
-mkdir($tmp);
-register_shutdown_function(function () use ($tmp) {
-    array_map('unlink', glob("$tmp/*"));
-    rmdir($tmp);
-});
-
-foreach ($sizes as $n) {
-    build($n, "$tmp/$n", $src);
+/** @return array<int, string> binary path by buffer size */
+function buildAll(array $sizes, string $dir, string $src): array
+{
+    return array_combine($sizes, array_map(fn($size) => build($size, "$dir/$size", $src), $sizes));
 }
 
-// Interleave the candidates so drift in machine load hits them equally,
-// and keep each one's fastest run.
-$best = array_fill_keys($sizes, INF);
-for ($i = 0; $i < $runs; $i++) {
-    foreach ($sizes as $n) {
-        $start = hrtime(true);
-        run(sprintf('%s | head -c %d > /dev/null', escapeshellarg("$tmp/$n"), $bytes));
-        $best[$n] = min($best[$n], (hrtime(true) - $start) / 1e9);
+/** Seconds taken to pipe $bytes bytes into head. */
+function measure(string $bin, int $bytes): float
+{
+    $start = hrtime(true);
+    run(sprintf('%s | head -c %d > /dev/null', escapeshellarg($bin), $bytes));
+
+    return (hrtime(true) - $start) / 1e9;
+}
+
+/**
+ * Interleave the candidates so drift in machine load hits them equally,
+ * and keep each one's fastest run.
+ *
+ * @return array<int, float> seconds by buffer size
+ */
+function benchmark(array $bins, int $bytes, int $runs): array
+{
+    $times = array_map(fn() => INF, $bins);
+    for ($i = 0; $i < $runs; $i++) {
+        foreach ($bins as $size => $bin) {
+            $times[$size] = min($times[$size], measure($bin, $bytes));
+        }
     }
+
+    return $times;
 }
 
-foreach ($best as $n => $t) {
-    fprintf(STDERR, "ycc: BUFSZ=%-8d %.3fs  %.2f GB/s\n", $n, $t, $bytes / $t / 1e9);
+function report(array $times, int $bytes): array
+{
+    foreach ($times as $size => $seconds) {
+        fprintf(STDERR, "ycc: BUFSZ=%-8d %.3fs  %.2f GB/s\n", $size, $seconds, $bytes / $seconds / 1e9);
+    }
+
+    return $times;
 }
 
-$selected = array_search(min($best), $best);
-fwrite(STDERR, "ycc: selected BUFSZ=$selected\n");
-build($selected, $out, $src);
+function fastest(array $times): int
+{
+    return array_search(min($times), $times);
+}
+
+function main(array $argv): void
+{
+    [$out, $src] = parseArgs($argv);
+    $bytes = (int) env('YCC_BYTES', '4000000000');
+    $runs = (int) env('YCC_RUNS', '5');
+    $tmp = tempDir();
+
+    $size = candidates()
+        |> (fn($sizes) => buildAll($sizes, $tmp, $src))
+        |> (fn($bins) => benchmark($bins, $bytes, $runs))
+        |> (fn($times) => report($times, $bytes))
+        |> fastest(...);
+
+    fwrite(STDERR, "ycc: selected BUFSZ=$size\n");
+    build($size, $out, $src);
+}
+
+main($argv);
