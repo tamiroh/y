@@ -1,6 +1,6 @@
 # y
 
-y – be more repetitively affirmative
+Print y repeatedly on an Apple Silicon Mac.
 
 ```sh
 make        # build ./y
