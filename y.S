@@ -1,8 +1,6 @@
 // yes(1) for macOS on Apple Silicon (arm64).
 
-#ifndef BUFSZ
 #define BUFSZ 32768
-#endif
 
 #define SYS_exit  1
 #define SYS_write 4

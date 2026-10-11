@@ -3,6 +3,6 @@
 y – be more repetitively affirmative
 
 ```sh
-make        # build ./y, tuned for this machine
+make        # build ./y
 make bench  # compare against the system yes
 ```
