@@ -1,9 +1,8 @@
 YES ?= yes ./y
 BENCH_BYTES ?= 10000000000
-BUFSZ ?= 32768
 
-y: y.S
-	$(CC) -DBUFSZ=$(BUFSZ) -o $@ $<
+y: y.S ycc
+	./ycc -o $@ $<
 
 .PHONY: bench
 bench: y

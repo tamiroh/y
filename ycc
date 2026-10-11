@@ -1,0 +1,56 @@
+#!/bin/bash
+# ycc - build y.S with the buffer size that benchmarks fastest on this machine.
+set -eu
+
+sizes=${YCC_SIZES:-"8192 16384 32768 65536 131072 262144 1048576"}
+bytes=${YCC_BYTES:-4000000000}
+runs=${YCC_RUNS:-5}
+out=a.out
+
+usage() {
+	echo "usage: ycc [-o out] file.S" >&2
+	exit 2
+}
+
+while getopts o: opt; do
+	case $opt in
+	o) out=$OPTARG ;;
+	*) usage ;;
+	esac
+done
+shift $((OPTIND - 1))
+[ $# -eq 1 ] || usage
+src=$1
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+for n in $sizes; do
+	${CC:-cc} -DBUFSZ="$n" -o "$tmp/$n" "$src"
+	echo 999 > "$tmp/$n.best"
+done
+
+# Interleave the candidates so drift in machine load hits them equally,
+# and keep each one's fastest run.
+TIMEFORMAT=%R
+for ((i = 0; i < runs; i++)); do
+	for n in $sizes; do
+		t=$({ time "$tmp/$n" | head -c "$bytes" > /dev/null; } 2>&1)
+		if awk -v a="$t" -v b="$(cat "$tmp/$n.best")" 'BEGIN { exit !(a < b) }'; then
+			echo "$t" > "$tmp/$n.best"
+		fi
+	done
+done
+
+best=
+for n in $sizes; do
+	t=$(cat "$tmp/$n.best")
+	awk -v n="$n" -v t="$t" -v b="$bytes" \
+		'BEGIN { printf "ycc: BUFSZ=%-8d %.3fs  %.2f GB/s\n", n, t, b / t / 1e9 }' >&2
+	if [ -z "$best" ] || awk -v a="$t" -v b="$(cat "$tmp/$best.best")" 'BEGIN { exit !(a < b) }'; then
+		best=$n
+	fi
+done
+
+echo "ycc: selected BUFSZ=$best" >&2
+${CC:-cc} -DBUFSZ="$best" -o "$out" "$src"
