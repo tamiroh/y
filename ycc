@@ -1,145 +1,109 @@
-#!/usr/bin/env php
-<?php
+#!/usr/bin/env ruby
+# frozen_string_literal: true
 
-/**
- * Build y.S with the buffer size that benchmarks fastest on this machine.
- *
- * Usage: ycc [-o out] file.S
- *
- * Environment:
- *   YCC_SIZES  buffer sizes to try, multiples of 4096
- *   YCC_BYTES  bytes piped per run
- *   YCC_RUNS   runs per size
- *   CC         compiler driver
- */
+# Build y.S with the buffer size that benchmarks fastest on this machine.
+#
+# Usage: ycc [-o out] file.S
+#
+# Environment:
+#   YCC_SIZES  buffer sizes to try, multiples of 4096
+#   YCC_BYTES  bytes piped per run
+#   YCC_RUNS   runs per size
+#   CC         compiler driver
 
-function usage(): never
-{
-    fwrite(STDERR, "usage: ycc [-o out] file.S\n");
-    exit(2);
-}
+require 'etc'
+require 'optparse'
+require 'shellwords'
+require 'tmpdir'
 
-function requireTarget(): void
-{
-    $os = PHP_OS_FAMILY;
-    $arch = php_uname('m');
-    if ($os !== 'Darwin' || $arch !== 'arm64') {
-        fwrite(STDERR, "ycc: unsupported target $os/$arch (need Darwin/arm64)\n");
-        exit(1);
-    }
-}
+def usage
+  warn 'usage: ycc [-o out] file.S'
+  exit 2
+end
 
-function env(string $name, string $default): string
-{
-    return getenv($name) ?: $default;
-}
+def require_target
+  os, arch = Etc.uname.values_at(:sysname, :machine)
+  return if os == 'Darwin' && arch == 'arm64'
 
-/** @return array{string, string} output path and source path */
-function parseArgs(array $argv): array
-{
-    $opts = getopt('o:', [], $rest);
-    $args = array_slice($argv, $rest);
-    if ($opts === false || count($args) !== 1) {
-        usage();
-    }
+  warn "ycc: unsupported target #{os}/#{arch} (need Darwin/arm64)"
+  exit 1
+end
 
-    return [$opts['o'] ?? 'a.out', $args[0]];
-}
+# Returns the output path and the source path.
+def parse_args(argv)
+  out = 'a.out'
+  args = OptionParser.new { |opts| opts.on('-o OUT') { |value| out = value } }.parse(argv)
+  usage unless args.size == 1
 
-/** @return int[] buffer sizes to try */
-function candidates(): array
-{
-    return env('YCC_SIZES', '8192 16384 32768 65536 131072 262144 1048576')
-        |> trim(...)
-        |> (fn($sizes) => preg_split('/\s+/', $sizes))
-        |> (fn($sizes) => array_map(intval(...), $sizes));
-}
+  [out, args.first]
+rescue OptionParser::ParseError
+  usage
+end
 
-function tempDir(): string
-{
-    $dir = sys_get_temp_dir() . '/ycc.' . getmypid();
-    mkdir($dir);
-    register_shutdown_function(function () use ($dir) {
-        array_map(unlink(...), glob("$dir/*"));
-        rmdir($dir);
-    });
+# Buffer sizes to try.
+def candidates
+  ENV.fetch('YCC_SIZES', '8192 16384 32768 65536 131072 262144 1048576').split.map(&:to_i)
+end
 
-    return $dir;
-}
+def run(*command)
+  system(*command) || exit($?.exitstatus || 1)
+end
 
-function run(string $command): void
-{
-    passthru($command, $status);
-    if ($status !== 0) {
-        exit($status);
-    }
-}
+def build(size, out, src)
+  run(ENV.fetch('CC', 'cc'), "-DBUFSZ=#{size}", '-o', out, src)
 
-function build(int $size, string $out, string $src): string
-{
-    run(sprintf('%s -DBUFSZ=%d -o %s %s', env('CC', 'cc'), $size, escapeshellarg($out), escapeshellarg($src)));
+  out
+end
 
-    return $out;
-}
+# Returns binary paths by buffer size.
+def build_all(sizes, dir, src)
+  sizes.to_h { |size| [size, build(size, File.join(dir, size.to_s), src)] }
+end
 
-/** @return array<int, string> binary path by buffer size */
-function buildAll(array $sizes, string $dir, string $src): array
-{
-    return array_combine($sizes, array_map(fn($size) => build($size, "$dir/$size", $src), $sizes));
-}
+# Seconds taken to pipe +bytes+ bytes into head.
+def measure(bin, bytes)
+  start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+  run("#{bin.shellescape} | head -c #{bytes} > /dev/null")
 
-/** Seconds taken to pipe $bytes bytes into head. */
-function measure(string $bin, int $bytes): float
-{
-    $start = hrtime(true);
-    run(sprintf('%s | head -c %d > /dev/null', escapeshellarg($bin), $bytes));
+  Process.clock_gettime(Process::CLOCK_MONOTONIC) - start
+end
 
-    return (hrtime(true) - $start) / 1e9;
-}
+# Returns seconds by buffer size.
+def benchmark(bins, bytes, runs)
+  times = Hash.new(Float::INFINITY)
+  runs.times do
+    bins.each { |size, bin| times[size] = [times[size], measure(bin, bytes)].min }
+  end
 
-/** @return array<int, float> seconds by buffer size */
-function benchmark(array $bins, int $bytes, int $runs): array
-{
-    $times = array_map(fn() => INF, $bins);
-    for ($i = 0; $i < $runs; $i++) {
-        foreach ($bins as $size => $bin) {
-            $times[$size] = min($times[$size], measure($bin, $bytes));
-        }
-    }
+  times
+end
 
-    return $times;
-}
+def report(times, bytes)
+  times.each do |size, seconds|
+    warn format('ycc: BUFSZ=%-8d %.3fs  %.2f GB/s', size, seconds, bytes / seconds / 1e9)
+  end
+end
 
-function report(array $times, int $bytes): array
-{
-    foreach ($times as $size => $seconds) {
-        fprintf(STDERR, "ycc: BUFSZ=%-8d %.3fs  %.2f GB/s\n", $size, $seconds, $bytes / $seconds / 1e9);
-    }
+def fastest(times)
+  times.min_by { |_size, seconds| seconds }.first
+end
 
-    return $times;
-}
+def main(argv)
+  out, src = parse_args(argv)
+  require_target
+  bytes = ENV.fetch('YCC_BYTES', '4000000000').to_i
+  runs = ENV.fetch('YCC_RUNS', '5').to_i
 
-function fastest(array $times): int
-{
-    return array_search(min($times), $times);
-}
+  Dir.mktmpdir('ycc') do |tmp|
+    size = candidates
+           .then { |sizes| build_all(sizes, tmp, src) }
+           .then { |bins| benchmark(bins, bytes, runs) }
+           .then { |times| report(times, bytes) }
+           .then { |times| fastest(times) }
 
-function main(array $argv): void
-{
-    [$out, $src] = parseArgs($argv);
-    requireTarget();
-    $bytes = (int) env('YCC_BYTES', '4000000000');
-    $runs = (int) env('YCC_RUNS', '5');
-    $tmp = tempDir();
+    warn "ycc: selected BUFSZ=#{size}"
+    build(size, out, src)
+  end
+end
 
-    $size = candidates()
-        |> (fn($sizes) => buildAll($sizes, $tmp, $src))
-        |> (fn($bins) => benchmark($bins, $bytes, $runs))
-        |> (fn($times) => report($times, $bytes))
-        |> fastest(...);
-
-    fwrite(STDERR, "ycc: selected BUFSZ=$size\n");
-    build($size, $out, $src);
-}
-
-main($argv);
+main(ARGV)
