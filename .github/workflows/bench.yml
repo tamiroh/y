@@ -1,0 +1,28 @@
+name: Benchmark
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - y.S
+      - Makefile
+      - .github/workflows/bench.yml
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Record environment
+        run: |
+          test "$(uname -m)" = arm64
+          sw_vers
+          sysctl -n machdep.cpu.brand_string
+          clang --version
+          git rev-parse HEAD
+      - name: Compare system yes and y
+        run: make bench YES='/usr/bin/yes ./y'
